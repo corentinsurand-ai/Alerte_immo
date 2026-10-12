@@ -1,0 +1,74 @@
+name: Alerte Immo Locatif
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'alerts/**'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  notifier:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detecter les fichiers d'alerte pousses
+        id: files
+        run: |
+          BEFORE="${{ github.event.before }}"
+          NOW="${{ github.sha }}"
+          if [ -n "$BEFORE" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            FILES=$(git diff --name-only "$BEFORE" "$NOW" -- 'alerts/*.md' | paste -sd, - || true)
+          else
+            FILES=$(find alerts -name '*.md' 2>/dev/null | paste -sd, - || true)
+          fi
+          echo "Fichiers detectes : [$FILES]"
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+
+      - name: Creer les issues de notification avec mention
+        uses: actions/github-script@v7
+        env:
+          ALERT_FILES: ${{ steps.files.outputs.files }}
+        with:
+          script: |
+            const fs = require('fs');
+            const files = (process.env.ALERT_FILES || '').split(',').map(s => s.trim()).filter(Boolean);
+            console.log('Fichiers:', JSON.stringify(files));
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'alerte',
+                color: '0e8a16'
+              });
+            } catch (e) {}
+            if (files.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'DEBUG - run ' + context.runNumber + ' : aucun fichier alerte detecte',
+                body: '@corentinsurand-ai Aucun fichier alerte detecte dans ce run.',
+                labels: ['debug']
+              });
+              return;
+            }
+            const NL = String.fromCharCode(10);
+            for (const f of files) {
+              const content = fs.readFileSync(f, 'utf8');
+              const firstLine = (content.split(NL).find(l => l.trim()) || f).replace(/^#+\s*/, '');
+              const title = firstLine.slice(0, 120);
+              const body = content + NL + NL + '---' + NL + '_robot alerte automatique Vibe - @corentinsurand-ai_';
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['alerte']
+              });
+            }
